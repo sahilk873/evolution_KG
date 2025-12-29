@@ -37,6 +37,28 @@ def load_jsonl(path: Path) -> List[Dict[str, Any]]:
     return rows
 
 
+def load_filtered_graph(split_name: str, excluded_subsets: Sequence[str] = ("val", "test")) -> TypedGraph:
+    import pandas as pd
+
+    triples_path = Path("data/processed/triples.tsv")
+    df = pd.read_csv(triples_path, sep="\t", dtype=str)
+    excluded_pairs = set()
+    split_dir = Path("data/splits") / split_name
+    for subset in excluded_subsets:
+        path = split_dir / f"{subset}.jsonl"
+        if not path.exists():
+            continue
+        for row in load_jsonl(path):
+            if int(row.get("label", 0)) == 1:
+                excluded_pairs.add((row["drug_id"], row["disease_id"]))
+    if excluded_pairs:
+        mask = ~(
+            df["relation"].str.upper() == "TREATS"
+        ) | ~df.apply(lambda r: (r["head"], r["tail"]) in excluded_pairs, axis=1)
+        df = df[mask].reset_index(drop=True)
+    return TypedGraph.from_triples(df)
+
+
 def build_examples(
     split_name: str,
     subset: str,
@@ -81,7 +103,7 @@ def train_classifier(
     if method not in BASELINE_REGISTRY:
         raise ValueError("Unknown baseline %r" % method)
     baseline = BASELINE_REGISTRY[method]
-    graph = TypedGraph.from_triples(Path("data/processed/triples.tsv"))
+    graph = load_filtered_graph(split_name)
     budgets = CandidateBudget(max_edges_total=budget)
     artifact_tag = artifact_tag or split_name
     classifier = Classifier(mode=model_type, device=device)

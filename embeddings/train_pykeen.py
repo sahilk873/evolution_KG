@@ -2,12 +2,12 @@
 from __future__ import annotations
 
 import argparse
-import json
 import logging
 from pathlib import Path
 from typing import Literal
 
 import numpy as np
+import pandas as pd
 import torch
 from pykeen.pipeline import pipeline
 from pykeen.triples import TriplesFactory
@@ -28,9 +28,18 @@ DEFAULT_PARAMS = {
 }
 
 
-def load_metadata(path: Path) -> dict:
-    with open(path, "r", encoding="utf-8") as handle:
-        return json.load(handle)
+def _load_excluded_pairs(split: str) -> set[tuple[str, str]]:
+    excluded = set()
+    split_dir = Path("data/splits") / split
+    for subset in ("val", "test"):
+        path = split_dir / f"{subset}.jsonl"
+        if not path.exists():
+            continue
+        for line in path.read_text().splitlines():
+            row = pd.read_json(line, typ="series")
+            if int(row.get("label", 0)) == 1:
+                excluded.add((row["drug_id"], row["disease_id"]))
+    return excluded
 
 
 def train_pykeen(
@@ -39,9 +48,19 @@ def train_pykeen(
     device: str = "cuda",
     epochs: int = 30,
     batch_size: int = 1024,
+    data_split: str | None = None,
 ) -> None:
     triples_path = Path("data/processed/triples.tsv")
-    tf = TriplesFactory.from_path(triples_path, create_inverse_triples=False, delimiter="\t")
+    df = pd.read_csv(triples_path, sep="\t", dtype=str)
+    base_split = data_split or split_name
+    excluded_pairs = _load_excluded_pairs(base_split)
+    if excluded_pairs:
+        mask = ~(
+            df["relation"].str.upper() == "TREATS"
+        ) | ~df.apply(lambda r: (r["head"], r["tail"]) in excluded_pairs, axis=1)
+        df = df[mask].reset_index(drop=True)
+    triples = df[["head", "relation", "tail"]].values
+    tf = TriplesFactory.from_labeled_triples(triples)
     params = DEFAULT_PARAMS[model_choice]
     artifact_dir = Path("artifacts/pykeen") / split_name
     artifact_dir.mkdir(parents=True, exist_ok=True)
