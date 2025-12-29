@@ -1,0 +1,9 @@
+numpy
+pandas
+scikit-learn
+networkx
+torch
+pykeen
+matplotlib
+tqdm
+joblib
