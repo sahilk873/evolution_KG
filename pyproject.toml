@@ -2,7 +2,10 @@
 name = "evolutionary-subgraph"
 version = "0.1.0"
 description = "Proof-of-concept for evolutionary explanations on Hetionet."
-authors = ["Codex CLI <codex@example.com>"]
+authors = [
+  { name = "Codex CLI", email = "codex@example.com" }
+]
+
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
@@ -16,3 +19,6 @@ dependencies = [
     "tqdm",
     "joblib",
 ]
+[tool.setuptools]
+packages = ["evolution"]
+

@@ -156,7 +156,7 @@ def main() -> None:
     download_hetionet(Path("data/raw/hetionet"))
     os.environ.setdefault("USE_PYKEEN_DATASET", "1")
     build_triples(Path("data/raw/hetionet"), Path("data/processed"), use_pykeen=True, cache_root=Path("data/raw/hetionet"))
-    build_splits(Path("data/processed/triples.tsv"), Path("data/processed/node_types.json"))
+    build_splits(Path("data/processed"))
     metrics_rows: List[Dict[str, Any]] = []
     diversity_records: List[Dict[str, Any]] = []
     diversity_values: List[float] = []

@@ -52,8 +52,8 @@ def train_pykeen(
         model=params["model"],
         optimizer="Adam",
         epochs=epochs,
-        batch_size=batch_size,
-        learning_rate=params["learning_rate"],
+        optimizer_kwargs={"lr": params["learning_rate"]},
+        training_kwargs={"batch_size": batch_size},
         device=device if torch.cuda.is_available() and "cuda" in device else "cpu",
     )
     result.save_to_directory(str(artifact_dir))
