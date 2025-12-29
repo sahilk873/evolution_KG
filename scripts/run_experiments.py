@@ -57,13 +57,40 @@ def load_predictions(path: Path) -> List[Dict[str, Any]]:
     return load_jsonl(path)
 
 
+def load_split_filtered_graph(split: str, excluded_subsets: Sequence[str] = ("val", "test")) -> TypedGraph:
+    triples_path = Path("data/processed/triples.tsv")
+    df = load_filtered_triples(triples_path, split, excluded_subsets)
+    return TypedGraph.from_triples(df)
+
+
+def load_filtered_triples(triples_path: Path, split: str, excluded_subsets: Sequence[str]) -> "pd.DataFrame":
+    import pandas as pd
+
+    df = pd.read_csv(triples_path, sep="\t", dtype=str)
+    split_dir = Path("data/splits") / split
+    excluded_pairs = set()
+    for subset in excluded_subsets:
+        path = split_dir / f"{subset}.jsonl"
+        if not path.exists():
+            continue
+        for row in load_jsonl(path):
+            if int(row.get("label", 0)) == 1:
+                excluded_pairs.add((row["drug_id"], row["disease_id"]))
+    if not excluded_pairs:
+        return df
+    mask = ~(
+        df["relation"].str.upper() == "TREATS"
+    ) | ~df.apply(lambda r: (r["head"], r["tail"]) in excluded_pairs, axis=1)
+    return df[mask].reset_index(drop=True)
+
+
 def run_evolution_phase(
     args: argparse.Namespace,
     split_tag: str,
     classifier: Any,
     seed: int,
 ) -> tuple[List[float], CandidatePool | None]:
-    graph = TypedGraph.from_triples(Path("data/processed/triples.tsv"))
+    graph = load_split_filtered_graph(args.split)
     budgets = CandidateBudget(max_edges_total=args.budget)
     test_rows = load_jsonl(Path("data/splits") / args.split / "test.jsonl")[: args.max_cases]
     diversity_scores: List[float] = []
@@ -155,7 +182,16 @@ def main() -> None:
     ensure_directories()
     download_hetionet(Path("data/raw/hetionet"))
     os.environ.setdefault("USE_PYKEEN_DATASET", "1")
-    build_triples(Path("data/raw/hetionet"), Path("data/processed"), use_pykeen=True, cache_root=Path("data/raw/hetionet"))
+    try:
+        build_triples(
+            Path("data/raw/hetionet"),
+            Path("data/processed"),
+            use_pykeen=True,
+            cache_root=Path("data/raw/hetionet"),
+        )
+    except RuntimeError:
+        logging.warning("Falling back to raw TSV parsing because PyKEEN download failed")
+        build_triples(Path("data/raw/hetionet"), Path("data/processed"), use_pykeen=False)
     build_splits(Path("data/processed"))
     metrics_rows: List[Dict[str, Any]] = []
     diversity_records: List[Dict[str, Any]] = []
@@ -163,7 +199,7 @@ def main() -> None:
     robustness_pool: CandidatePool | None = None
     for seed in range(args.seeds):
         split_tag = f"{args.split}_seed{seed}"
-        train_pykeen(split_tag, args.model, args.device, epochs=args.epochs, batch_size=args.batch_size)
+        train_pykeen(split_tag, args.model, args.device, epochs=args.epochs, batch_size=args.batch_size, data_split=args.split)
         export_report(split_tag)
         classifier = train_classifier(
             args.split,

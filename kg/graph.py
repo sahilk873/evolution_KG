@@ -4,7 +4,7 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterable, List, Tuple
+from typing import Dict, Iterable, List, Tuple, Union
 
 import pandas as pd
 
@@ -20,8 +20,11 @@ class TypedGraph:
     nodes_by_type: Dict[str, List[str]]
 
     @classmethod
-    def from_triples(cls, triples_path: Path, budget_per_node: int = 200) -> "TypedGraph":
-        df = pd.read_csv(triples_path, sep="\t", dtype=str)
+    def from_triples(cls, triples_source: Union[Path, pd.DataFrame], budget_per_node: int = 200) -> "TypedGraph":
+        if isinstance(triples_source, Path):
+            df = pd.read_csv(triples_source, sep="\t", dtype=str)
+        else:
+            df = triples_source.copy()
         out_adj = defaultdict(list)
         in_adj = defaultdict(list)
         nodes_by_type = defaultdict(list)

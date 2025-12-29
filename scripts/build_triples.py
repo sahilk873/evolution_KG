@@ -77,7 +77,10 @@ def _write_processed(
 
 
 def _from_pykeen(processed_dir: Path, cache_root: Path) -> None:
-    from pykeen.datasets import Hetionet
+    try:
+        from pykeen.datasets import Hetionet
+    except ImportError as exc:  # pragma: no cover - runtime dependency
+        raise RuntimeError("PyKEEN is required to download Hetionet; install pykeen") from exc
 
     dataset = Hetionet(cache_root=str(cache_root))
     mapped = dataset.training.mapped_triples.cpu().numpy()
