@@ -117,6 +117,10 @@ def train_classifier(
             continue
         preds = classifier.predict_proba(X_subset)
         write_predictions(artifact_tag, method, subset, rows, preds)
+    classifier.save(
+        Path("artifacts/classifiers") / artifact_tag / f"{method}_{classifier.mode}",
+        input_dim=X_train.shape[1],
+    )
     return classifier
 
 

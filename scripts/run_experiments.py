@@ -17,6 +17,7 @@ from embeddings.export_embeddings import export_report
 from embeddings.train_pykeen import train_pykeen
 from kg.graph import TypedGraph
 from models.train import load_jsonl, train_classifier
+from models.classifier import Classifier
 from retrieval.candidate_pool import CandidatePool, build_candidate_pool
 from retrieval.constraints import CandidateBudget
 from scripts.build_triples import build_triples
@@ -48,7 +49,23 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-cases", type=int, default=3)
     parser.add_argument("--epochs", type=int, default=30)
     parser.add_argument("--batch_size", type=int, default=1024)
+    parser.add_argument(
+        "--skip-prep",
+        action="store_true",
+        dest="skip_prep",
+        help="Assume triples/splits already exist and skip download/build steps",
+    )
+    parser.add_argument(
+        "--reuse-artifacts",
+        action="store_true",
+        dest="reuse_artifacts",
+        help="Skip PyKEEN training and reuse cached embeddings/classifier artifacts (requires existing artifacts/predictions)",
+    )
     return parser.parse_args()
+
+
+def classifier_artifact_path(split_tag: str, method: str, classifier_mode: str) -> Path:
+    return Path("artifacts/classifiers") / split_tag / f"{method}_{classifier_mode}"
 
 
 def load_predictions(path: Path) -> List[Dict[str, Any]]:
@@ -180,36 +197,47 @@ def write_case_studies(split_tag: str) -> None:
 def main() -> None:
     args = parse_args()
     ensure_directories()
-    download_hetionet(Path("data/raw/hetionet"))
-    os.environ.setdefault("USE_PYKEEN_DATASET", "1")
-    try:
-        build_triples(
-            Path("data/raw/hetionet"),
-            Path("data/processed"),
-            use_pykeen=True,
-            cache_root=Path("data/raw/hetionet"),
-        )
-    except RuntimeError:
-        logging.warning("Falling back to raw TSV parsing because PyKEEN download failed")
-        build_triples(Path("data/raw/hetionet"), Path("data/processed"), use_pykeen=False)
-    build_splits(Path("data/processed"))
+    if args.skip_prep:
+        logging.info("Skipping download/triples/split prep (assumes files exist)")
+        _ensure_prep(args.split)
+    else:
+        download_hetionet(Path("data/raw/hetionet"))
+        os.environ.setdefault("USE_PYKEEN_DATASET", "1")
+        try:
+            build_triples(
+                Path("data/raw/hetionet"),
+                Path("data/processed"),
+                use_pykeen=True,
+                cache_root=Path("data/raw/hetionet"),
+            )
+        except RuntimeError:
+            logging.warning("Falling back to raw TSV parsing because PyKEEN download failed")
+            build_triples(Path("data/raw/hetionet"), Path("data/processed"), use_pykeen=False)
+        build_splits(Path("data/processed"))
     metrics_rows: List[Dict[str, Any]] = []
     diversity_records: List[Dict[str, Any]] = []
     diversity_values: List[float] = []
     robustness_pool: CandidatePool | None = None
     for seed in range(args.seeds):
         split_tag = f"{args.split}_seed{seed}"
-        train_pykeen(split_tag, args.model, args.device, epochs=args.epochs, batch_size=args.batch_size, data_split=args.split)
+        if args.reuse_artifacts:
+            logging.info("Reusing cached embeddings/classifier artifacts for %s", split_tag)
+        else:
+            train_pykeen(split_tag, args.model, args.device, epochs=args.epochs, batch_size=args.batch_size, data_split=args.split)
         export_report(split_tag)
-        classifier = train_classifier(
-            args.split,
-            args.baseline_method,
-            args.device,
-            args.classifier,
-            args.budget,
-            artifact_tag=split_tag,
-            limit=args.max_rows,
-        )
+        if args.reuse_artifacts:
+            classifier_path = classifier_artifact_path(split_tag, args.baseline_method, args.classifier)
+            classifier = Classifier.load(classifier_path, args.device)
+        else:
+            classifier = train_classifier(
+                args.split,
+                args.baseline_method,
+                args.device,
+                args.classifier,
+                args.budget,
+                artifact_tag=split_tag,
+                limit=args.max_rows,
+            )
         preds_path = Path("artifacts/preds") / split_tag / f"{args.baseline_method}_test.jsonl"
         preds = load_predictions(preds_path)
         if preds:
@@ -251,6 +279,23 @@ def main() -> None:
     else:
         robustness_scores = [0.0 for _ in corruptions]
     plot_robustness_curve(corruptions, robustness_scores, Path("results/plots/robustness_curves.png"))
+
+
+def _ensure_prep(split: str) -> None:
+    triples_path = Path("data/processed/triples.tsv")
+    if not triples_path.exists():
+        raise RuntimeError(
+            "Processed triples not found under data/processed/triples.tsv; remove --skip-prep or rebuild."
+        )
+    split_dir = Path("data/splits") / split
+    missing = []
+    for subset in ("train", "val", "test"):
+        if not (split_dir / f"{subset}.jsonl").exists():
+            missing.append(subset)
+    if missing:
+        raise RuntimeError(
+            f"Missing split files for '{split}' in data/splits/{split}: {', '.join(missing)}; remove --skip-prep to rebuild."
+        )
 
 
 if __name__ == "__main__":

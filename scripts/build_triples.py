@@ -14,6 +14,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 
 NODE_TYPES = ["COMPOUND", "DISEASE", "GENE", "PATHWAY", "ANATOMY", "UNKNOWN"]
 USE_PYKEEN_DATASET = os.getenv("USE_PYKEEN_DATASET", "1") == "1"
+RELATION_ALIASES = {"CtD": "TREATS"}
 
 
 def _infer_type(label: str) -> str:
@@ -76,6 +77,10 @@ def _write_processed(
             json.dump(payload, handle, indent=2)
 
 
+def _canonicalize_relation(relation: str) -> str:
+    return RELATION_ALIASES.get(relation, relation)
+
+
 def _from_pykeen(processed_dir: Path, cache_root: Path) -> None:
     try:
         from pykeen.datasets import Hetionet
@@ -93,7 +98,7 @@ def _from_pykeen(processed_dir: Path, cache_root: Path) -> None:
     for head_id, rel_id, tail_id in mapped:
         head = id_to_entity[int(head_id)]
         tail = id_to_entity[int(tail_id)]
-        relation = id_to_relation[int(rel_id)]
+        relation = _canonicalize_relation(id_to_relation[int(rel_id)])
         node_types.setdefault(head, _infer_type(head))
         node_types.setdefault(tail, _infer_type(tail))
         rows.append(
@@ -106,7 +111,13 @@ def _from_pykeen(processed_dir: Path, cache_root: Path) -> None:
             }
         )
     df = pd.DataFrame(rows)
-    _write_processed(df, processed_dir, entity_to_id, relation_to_id, node_types)
+    relation2id: Dict[str, int] = {}
+    for rel, rel_id in relation_to_id.items():
+        canonical = _canonicalize_relation(rel)
+        if canonical in relation2id and relation2id[canonical] != rel_id:
+            raise RuntimeError(f"Collision while canonicalizing relation '{rel}' to '{canonical}'")
+        relation2id[canonical] = rel_id
+    _write_processed(df, processed_dir, entity_to_id, relation2id, node_types)
     logging.info("Built %d triples from PyKEEN Hetionet", len(df))
 
 

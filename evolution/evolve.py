@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable, List, Tuple
 
-from evolution.operators import add_frontier, crossover, delete_edge
+from evolution.operators import add_frontier, crossover, delete_edge, swap_edges, type_aware_add
 from evolution.representation import SubgraphRepresentation
 from features.featurize import build_feature_vector
 from models.classifier import Classifier
@@ -25,6 +25,9 @@ class EvolutionConfig:
     crossover_rate: float = 0.3
     immigrant_rate: float = 0.1
     topk: int = 5
+    add_rate: float = 0.5
+    swap_rate: float = 0.25
+    type_rate: float = 0.25
 
 
 @dataclass
@@ -129,14 +132,37 @@ def evolve_query(
         )
         elites = [indiv for _, indiv in scored[: max(1, int(len(scored) * 0.15))]]
         new_population = elites.copy()
+        candidate_indices = list(range(len(candidate_pool.edges)))
         while len(new_population) < config.pop_size:
             if random.random() < config.crossover_rate and len(elites) >= 2:
                 parent_a, parent_b = random.sample(elites, 2)
                 child = crossover(parent_a, parent_b, config.budget, rng)
             else:
                 parent = random.choice(elites)
-                if random.random() < config.mutation_rate:
-                    child = add_frontier(parent, list(range(len(candidate_pool.edges))), config.budget, rng)
+                if rng.random() < config.mutation_rate:
+                    mutation_roll = rng.random()
+                    total_rate = config.add_rate + config.swap_rate + config.type_rate
+                    if total_rate <= 0:
+                        child = add_frontier(parent, candidate_indices, config.budget, rng)
+                    else:
+                        threshold_add = config.add_rate / total_rate
+                        threshold_swap = (config.add_rate + config.swap_rate) / total_rate
+                        if mutation_roll < threshold_add:
+                            child = add_frontier(parent, candidate_indices, config.budget, rng)
+                        elif mutation_roll < threshold_swap:
+                            child = swap_edges(parent, candidate_indices, rng, config.budget)
+                        else:
+                            anchor_nodes: set[int] = set()
+                            for edge_idx in parent.edge_idx_set:
+                                if 0 <= edge_idx < len(candidate_pool.edges):
+                                    src, _, dst = candidate_pool.edges[edge_idx]
+                                    anchor_nodes.update({src, dst})
+                            preferred = {
+                                idx
+                                for idx, (src, _, dst) in enumerate(candidate_pool.edges)
+                                if idx not in parent.edge_idx_set and (src in anchor_nodes or dst in anchor_nodes)
+                            }
+                            child = type_aware_add(parent, candidate_indices, rng, preferred, config.budget)
                 else:
                     child = delete_edge(parent, rng)
             if len(child.edge_idx_set) < config.budget and random.random() < config.immigrant_rate:

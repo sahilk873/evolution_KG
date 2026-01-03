@@ -5,12 +5,12 @@
 #SBATCH --job-name=evo-poc
 #SBATCH --partition=volta-gpu
 #SBATCH --qos=gpu_access
-#SBATCH --time=36:00:00
+#SBATCH --time=24:00:00
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
-#SBATCH --output=logs/%x_%j.out
-#SBATCH --error=logs/%x_%j.err
+#SBATCH --output=logs/%x_%jquick.out
+#SBATCH --error=logs/%x_%jquick.err
 
 set -euo pipefail
 
@@ -61,26 +61,24 @@ GPU_MONITOR_PID=$!
 
 # ---- Run experiments ----
 
-
-python scripts/build_triples.py
-
-python scripts/make_splits.py
-
 python -m scripts.run_experiments \
     --split random \
     --method all \
     --model rotate \
-    --device "$DEVICE" \
-    --budget 100 \
-    --pop_size 80 \
-    --topk 5 \
-    --seeds 3 \
+    --device cuda \
+    --budget 10 \
+    --pop_size 5 \
+    --generations 2 \
+    --topk 2 \
+    --seeds 1 \
+    --epochs 1 \
+    --batch_size 16 \
+    --max-rows 5 \
+    --max-cases 1 \
+    --baseline-method full_embed \
     --classifier logistic \
-    --baseline-method khop \
-    --epochs 50 \
-    --batch_size 1024 \
-    --max-rows 1000 \
-    --max-cases 300
+    --reuse-artifacts \
+    --skip-prep
 
 # ---- Stop GPU monitor ----
 kill $GPU_MONITOR_PID || true
