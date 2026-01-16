@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
-from typing import Dict, Iterable, Sequence
+from typing import Dict, Iterable, Sequence, Tuple
 
 import numpy as np
 from evolution.representation import SubgraphRepresentation
@@ -14,12 +14,34 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 
 NODE_TYPES = ["COMPOUND", "DISEASE", "GENE", "PATHWAY", "ANATOMY", "UNKNOWN"]
 
+FEATURE_CACHE: Dict[Tuple[str, str], Dict[str, np.ndarray]] = {}
+
+def get_query_cache(split: str, query_id: str) -> Dict[str, np.ndarray]:
+    key = (split, query_id)
+    if key not in FEATURE_CACHE:
+        FEATURE_CACHE[key] = {}
+    return FEATURE_CACHE[key]
+
+def clear_feature_cache(split: str | None = None, query_id: str | None = None) -> None:
+    if split and query_id:
+        FEATURE_CACHE.pop((split, query_id), None)
+        return
+    if split:
+        for key in [k for k in FEATURE_CACHE if k[0] == split]:
+            FEATURE_CACHE.pop(key, None)
+        return
+    FEATURE_CACHE.clear()
+
 
 def load_json(path: Path) -> dict:
     if not path.exists():
         return {}
-    with open(path, "r", encoding="utf-8") as handle:
-        return json.load(handle)
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            return json.load(handle)
+    except json.JSONDecodeError as exc:
+        logging.error("Could not parse JSON %s (%s); treating as empty mapping", path, exc)
+        return {}
 
 
 def load_entity_embeddings(split: str) -> Dict[str, np.ndarray]:
@@ -68,6 +90,17 @@ def build_feature_vector(
     candidate_pool: CandidatePool,
     subgraph: SubgraphRepresentation,
 ) -> np.ndarray:
+    subgraph_hash = subgraph.hash()
+    query_cache = get_query_cache(split, query_id)
+    if subgraph_hash in query_cache:
+        return query_cache[subgraph_hash]
+    dest = cache_path(split, query_id, subgraph_hash)
+    cached = load_cached_features(dest)
+    if cached is not None:
+        logging.debug("Loaded cached features from %s", dest)
+        query_cache[subgraph_hash] = cached
+        return cached
+
     entity_embeddings = load_entity_embeddings(split)
     node_types = load_json(Path("data/processed/node_types.json"))
     relation_map = load_json(Path("data/processed/relation2id.json"))
@@ -89,9 +122,9 @@ def build_feature_vector(
         if typ in NODE_TYPES:
             type_hist[NODE_TYPES.index(typ)] += 1
     feature_vector = np.concatenate([drug_vec, disease_vec, prod_vec, diff_vec, pooled_vec, rel_hist, type_hist])
-    dest = cache_path(split, query_id, subgraph.hash())
     np.save(dest, feature_vector)
-    logging.info("Cached features to %s", dest)
+    query_cache[subgraph_hash] = feature_vector
+    logging.debug("Cached features to %s", dest)
     return feature_vector
 
 

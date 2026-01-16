@@ -111,6 +111,7 @@ def train_pykeen(
     epochs: int = 30,
     batch_size: int = 1024,
     data_split: str | None = None,
+    random_seed: int | None = None,
 ) -> None:
     triples_path = Path("data/processed/triples.tsv")
     df = pd.read_csv(triples_path, sep="\t", dtype=str)
@@ -143,6 +144,10 @@ def train_pykeen(
     )
 
     logging.info("Training %s on %s triples", params["model"], tf.num_triples)
+    pipeline_kwargs: dict[str, object] = {}
+    if random_seed is not None:
+        pipeline_kwargs["random_seed"] = random_seed
+
     result = pipeline(
         training=tf,
         testing=testing_tf,
@@ -153,6 +158,7 @@ def train_pykeen(
         optimizer_kwargs={"lr": params["learning_rate"]},
         training_kwargs={"batch_size": batch_size},
         device=device if torch.cuda.is_available() and "cuda" in device else "cpu",
+        **pipeline_kwargs,
     )
     result.save_to_directory(str(artifact_dir))
     entity_embeddings = _extract_embedding_weights(

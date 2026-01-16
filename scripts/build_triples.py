@@ -59,6 +59,14 @@ def _read_raw_triples(raw_dir: Path) -> Tuple[Sequence[Tuple[str, str, str]], Di
     return triples, node_types
 
 
+def _atomic_write_json(path: Path, payload: Dict[str, str]) -> None:
+    # Write to a temp file and rename to avoid exposing partial writes.
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    with open(tmp, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle, indent=2)
+    tmp.replace(path)
+
+
 def _write_processed(
     df: pd.DataFrame,
     processed_dir: Path,
@@ -73,8 +81,7 @@ def _write_processed(
         ("relation2id.json", relation2id),
         ("node_types.json", node_types),
     ):
-        with open(processed_dir / name, "w", encoding="utf-8") as handle:
-            json.dump(payload, handle, indent=2)
+        _atomic_write_json(processed_dir / name, payload)
 
 
 def _canonicalize_relation(relation: str) -> str:

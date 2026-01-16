@@ -5,12 +5,12 @@
 #SBATCH --job-name=evo-poc
 #SBATCH --partition=volta-gpu
 #SBATCH --qos=gpu_access
-#SBATCH --time=36:00:00
+#SBATCH --time=72:00:00
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
-#SBATCH --output=logs/%x_%j.out
-#SBATCH --error=logs/%x_%j.err
+#SBATCH --output=logs/disease/%x_%j.out
+#SBATCH --error=logs/disease/%x_%j.err
 
 set -euo pipefail
 
@@ -61,26 +61,37 @@ GPU_MONITOR_PID=$!
 
 # ---- Run experiments ----
 
+SPLIT="${SPLIT:-disease_holdout}"
+SEEDS="${SEEDS:-1}"
+PYKEEN_SEED="${PYKEEN_SEED:-4001}"
+RESULTS_DIR="${RESULTS_DIR:-results/disease_seed1}"
+SPLIT_TAG="${SPLIT}_seed${SEEDS}"
 
-python scripts/build_triples.py
+echo "Using split tag: ${SPLIT_TAG} (split=${SPLIT}, seeds=${SEEDS})"
+echo "Results directory: ${RESULTS_DIR}"
+echo "PyKEEN random seed: ${PYKEEN_SEED}"
 
-python scripts/make_splits.py
 
 python -m scripts.run_experiments \
-    --split random \
-    --method all \
-    --model rotate \
-    --device "$DEVICE" \
-    --budget 100 \
-    --pop_size 80 \
-    --topk 5 \
-    --seeds 3 \
-    --classifier logistic \
-    --baseline-method khop \
-    --epochs 50 \
-    --batch_size 1024 \
-    --max-rows 1000 \
-    --max-cases 300
+  --split random \
+  --method all \
+  --model rotate \
+  --device "$DEVICE" \
+  --budget 100 \
+  --pop_size 80 \
+  --generations 25 \
+  --topk 5 \
+  --seeds 3 \
+  --max-rows 5000 \
+  --max-cases 1000 \
+  --cotrain_rounds 2 \
+  --train_subgraph_method khop \
+  --evo_train_topk 1 \
+  --evo_negatives khop \
+  --mix_khop_frac 0.5 \
+  --evo_train_max_cases 2500 \
+  --skip-size-tradeoff
+
 
 # ---- Stop GPU monitor ----
 kill $GPU_MONITOR_PID || true

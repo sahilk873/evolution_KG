@@ -6,6 +6,7 @@ import types
 from types import SimpleNamespace
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 from retrieval.candidate_pool import CandidatePool
@@ -144,6 +145,7 @@ def test_run_evolution_phase(monkeypatch, tmp_path, runner):
     candidate_pool = CandidatePool(nodes=["A", "D1"], edges=[(0, 1, 1), (1, 2, 1)])
     monkeypatch.setattr(run_experiments, "build_candidate_pool", lambda *_: candidate_pool)
     monkeypatch.setattr(run_experiments, "load_jsonl", lambda _: [{"drug_id": "A", "disease_id": "D1"}])
+    monkeypatch.setattr(run_experiments, "build_feature_vector", lambda *args, **kwargs: np.zeros(1))
 
     class FakeSubgraph:
         def __init__(self, edge_indices):
@@ -153,23 +155,75 @@ def test_run_evolution_phase(monkeypatch, tmp_path, runner):
         return [FakeSubgraph({0}), FakeSubgraph({1})]
 
     monkeypatch.setattr(run_experiments, "evolve_query", fake_evolve)
-    diversity_scores, reference_pool = run_experiments.run_evolution_phase(
-        args, "random_seed0", classifier=object(), seed=0
+    class DummyClassifier:
+        def predict_proba(self, _):
+            return np.array([0.5])
+
+    diversity_scores, reference_pool, evolution_records = run_experiments.run_evolution_phase(
+        args,
+        "random_seed0",
+        classifier=DummyClassifier(),
+        seed=0,
+        graph="graph",
+        test_rows=[{"drug_id": "A", "disease_id": "D1"}],
     )
     assert reference_pool is candidate_pool
     assert diversity_scores == [1.0]
+    assert evolution_records
+    assert evolution_records[0]["size"] == 1
 
 
 def test_write_metric_and_table_helpers(tmp_path, monkeypatch, runner):
     run_experiments = runner
     monkeypatch.chdir(tmp_path)
-    run_experiments.write_metrics_table([{"split": "random", "seed": 0, "method": "full_embed", "roc_auc": 0.5, "pr_auc": 0.4}])
+    run_experiments.write_metrics_table(
+        [
+            {
+                "split": "random",
+                "seed": 0,
+                "round": 0,
+                "method": "full_embed",
+                "mode": "baseline",
+                "roc_auc": 0.5,
+                "pr_auc": 0.4,
+            }
+        ]
+    )
     contents = Path("results/tables/main_metrics.csv").read_text()
-    assert "split,seed,method,roc_auc,pr_auc" in contents
-    run_experiments.write_size_tradeoff([10, 20], "full_embed", 0.6, Path("results/tables/size_tradeoff.csv"))
-    assert "full_embed,10,0.6,5" in Path("results/tables/size_tradeoff.csv").read_text()
-    run_experiments.write_diversity_table([{"split": "random", "seed": 0, "avg_jaccard": 0.8}])
-    assert "avg_jaccard" in Path("results/tables/diversity.csv").read_text()
+    assert "split,seed,round,method,mode,roc_auc,pr_auc" in contents
+    run_experiments.write_cotrain_metrics(
+        [
+            {
+                "split": "random",
+                "seed": 0,
+                "round": 1,
+                "method": "evolution",
+                "mode": "evolution",
+                "roc_auc": 0.6,
+                "pr_auc": 0.5,
+            }
+        ]
+    )
+    cotrain_contents = Path("results/tables/cotrain_metrics.csv").read_text()
+    assert "split,seed,round,method,mode,roc_auc,pr_auc" in cotrain_contents
+    tradeoff_rows = [
+        {
+            "split": "random",
+            "seed": 0,
+            "method": "full_embed",
+            "budget": 10,
+            "roc_auc": 0.6,
+            "pr_auc": 0.5,
+            "median_edges": 5,
+        }
+    ]
+    run_experiments.write_size_tradeoff(tradeoff_rows)
+    assert "full_embed,10,0.6,0.5,5" in Path("results/tables/size_tradeoff.csv").read_text()
+    run_experiments.write_diversity_table(
+        [{"split": "random", "seed": 0, "round": 0, "avg_jaccard": 0.8}]
+    )
+    diversity_contents = Path("results/tables/diversity.csv").read_text()
+    assert "split,seed,round,avg_jaccard" in diversity_contents
 
 
 def test_write_robustness_and_case_studies(tmp_path, monkeypatch, runner):
@@ -177,13 +231,16 @@ def test_write_robustness_and_case_studies(tmp_path, monkeypatch, runner):
     monkeypatch.chdir(tmp_path)
     pool = CandidatePool(nodes=["A", "D"], edges=[(0, 1, 1), (1, 2, 1)])
     monkeypatch.setattr(run_experiments, "corrupt_candidate", lambda base, _: CandidatePool(base.nodes, base.edges[:1]))
-    run_experiments.write_robustness_table(pool, [0.1, 0.2], Path("results/tables/robustness.csv"))
-    assert "drop_prob,stability" in Path("results/tables/robustness.csv").read_text()
+    run_experiments.write_robustness_table("baseline", pool, [0.1, 0.2], Path("results/tables/robustness.csv"))
+    robustness_text = Path("results/tables/robustness.csv").read_text()
+    assert "method,drop_prob,stability" in robustness_text
     artifacts_dir = tmp_path / "artifacts/evo/random_seed0/query"
     artifacts_dir.mkdir(parents=True)
     with open(artifacts_dir / "topk.json", "w", encoding="utf-8") as handle:
         json.dump([{"edges": [{"src": "A", "dst": "D", "rel_id": 1}], "rank": 1}], handle)
-    run_experiments.write_case_studies("random_seed0")
+    run_experiments.write_case_studies("random_seed0", limit=1)
     case_file = Path("results/case_studies/query.md")
     assert case_file.exists()
-    assert "Top hypotheses" in case_file.read_text()
+    contents = case_file.read_text()
+    assert "Case study" in contents
+    assert "Biology commentary" in contents

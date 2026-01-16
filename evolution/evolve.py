@@ -6,11 +6,12 @@ import math
 import random
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterable, List, Tuple
+from typing import Iterable, List, Set, Tuple
 
 from evolution.operators import add_frontier, crossover, delete_edge, swap_edges, type_aware_add
 from evolution.representation import SubgraphRepresentation
 from features.featurize import build_feature_vector
+from features.path_features import shortest_paths
 from models.classifier import Classifier
 from retrieval.candidate_pool import CandidatePool
 
@@ -48,6 +49,106 @@ def random_individual(candidate_pool: CandidatePool, budget: int, rng: random.Ra
         src, _, dst = candidate_pool.edges[idx]
         node_indices.update({src, dst})
     return SubgraphRepresentation(edge_idx_set=selection, node_idx_set=frozenset(node_indices))
+
+
+def edge_lookup(candidate_pool: CandidatePool) -> dict[tuple[str, str], List[int]]:
+    lookup: dict[tuple[str, str], List[int]] = {}
+    for idx, (src_idx, _, dst_idx) in enumerate(candidate_pool.edges):
+        key = (candidate_pool.nodes[src_idx], candidate_pool.nodes[dst_idx])
+        lookup.setdefault(key, []).append(idx)
+    return lookup
+
+
+def edges_on_shortest_paths(candidate_pool: CandidatePool, drug: str, disease: str) -> Set[int]:
+    paths = shortest_paths(candidate_pool, drug, disease, k=5)
+    lookup = edge_lookup(candidate_pool)
+    edge_indices: Set[int] = set()
+    for path in paths:
+        for src_node, dst_node in zip(path, path[1:]):
+            candidates = lookup.get((src_node, dst_node))
+            if not candidates:
+                continue
+            edge_indices.add(candidates[0])
+    return edge_indices
+
+
+def build_adjacency(candidate_pool: CandidatePool) -> dict[int, List[int]]:
+    adjacency: dict[int, List[int]] = {}
+    for idx, (src, _, dst) in enumerate(candidate_pool.edges):
+        adjacency.setdefault(src, []).append(idx)
+        adjacency.setdefault(dst, []).append(idx)
+    return adjacency
+
+
+def random_walk_individual(
+    candidate_pool: CandidatePool,
+    budget: int,
+    rng: random.Random,
+    start_nodes: List[int],
+    adjacency: dict[int, List[int]],
+) -> SubgraphRepresentation:
+    selected_edges: Set[int] = set()
+    node_indices: Set[int] = set(start_nodes)
+
+    for start in start_nodes:
+        current = start
+        steps = 0
+        while len(selected_edges) < budget and steps < budget:
+            candidates = [idx for idx in adjacency.get(current, []) if idx not in selected_edges]
+            if not candidates:
+                break
+            edge_idx = rng.choice(candidates)
+            selected_edges.add(edge_idx)
+            src, _, dst = candidate_pool.edges[edge_idx]
+            node_indices.update({src, dst})
+            current = dst if src == current else src
+            steps += 1
+
+    while len(selected_edges) < budget:
+        frontier = [
+            idx
+            for node in node_indices
+            for idx in adjacency.get(node, [])
+            if idx not in selected_edges
+        ]
+        if not frontier:
+            break
+        edge_idx = rng.choice(frontier)
+        selected_edges.add(edge_idx)
+        src, _, dst = candidate_pool.edges[edge_idx]
+        node_indices.update({src, dst})
+
+    return SubgraphRepresentation(edge_idx_set=frozenset(selected_edges), node_idx_set=frozenset(node_indices))
+
+
+def shortest_path_individual(
+    candidate_pool: CandidatePool,
+    budget: int,
+    rng: random.Random,
+    drug: str,
+    disease: str,
+) -> SubgraphRepresentation:
+    edge_indices = edges_on_shortest_paths(candidate_pool, drug, disease)
+    if not edge_indices:
+        return random_individual(candidate_pool, budget, rng)
+    selected = set()
+    node_indices = set()
+    for idx in edge_indices:
+        if len(selected) >= budget:
+            break
+        selected.add(idx)
+        src, _, dst = candidate_pool.edges[idx]
+        node_indices.update({src, dst})
+    if len(selected) < budget:
+        candidate_indices = list(range(len(candidate_pool.edges)))
+        indiv = SubgraphRepresentation(frozenset(selected), frozenset(node_indices))
+        while len(indiv.edge_idx_set) < budget:
+            updated = add_frontier(indiv, candidate_pool.edges, candidate_indices, budget, rng)
+            if updated.edge_idx_set == indiv.edge_idx_set:
+                break
+            indiv = updated
+        return indiv
+    return SubgraphRepresentation(edge_idx_set=frozenset(selected), node_idx_set=frozenset(node_indices))
 
 
 def evaluate_population(
@@ -113,9 +214,31 @@ def evolve_query(
     classifier: Classifier,
     config: EvolutionConfig,
     rng: random.Random,
+    *,
+    persist_topk_file: bool = True,
+    persist_stats_file: bool = True,
 ) -> List[SubgraphRepresentation]:
-    population = [random_individual(candidate_pool, config.budget, rng) for _ in range(config.pop_size)]
+    adjacency = build_adjacency(candidate_pool)
+    node_index = candidate_pool.node_index
+    start_nodes = [idx for idx in [node_index.get(drug), node_index.get(disease)] if idx is not None]
+    rw_count = int(config.pop_size * 0.4)
+    sp_count = int(config.pop_size * 0.4)
+    rand_count = config.pop_size - rw_count - sp_count
+    population: List[SubgraphRepresentation] = []
+    for _ in range(rw_count):
+        if start_nodes:
+            population.append(random_walk_individual(candidate_pool, config.budget, rng, start_nodes, adjacency))
+        else:
+            population.append(random_individual(candidate_pool, config.budget, rng))
+    for _ in range(sp_count):
+        population.append(shortest_path_individual(candidate_pool, config.budget, rng, drug, disease))
+    for _ in range(rand_count):
+        population.append(random_individual(candidate_pool, config.budget, rng))
     stats: List[GenerationStats] = []
+    path_edge_indices = edges_on_shortest_paths(candidate_pool, drug, disease)
+    relation_counts: dict[int, int] = {}
+    for _, rel_id, _ in candidate_pool.edges:
+        relation_counts[rel_id] = relation_counts.get(rel_id, 0) + 1
     for generation in range(config.generations):
         scored = evaluate_population(population, drug, disease, candidate_pool, split, classifier, config)
         if not scored:
@@ -136,21 +259,29 @@ def evolve_query(
         while len(new_population) < config.pop_size:
             if random.random() < config.crossover_rate and len(elites) >= 2:
                 parent_a, parent_b = random.sample(elites, 2)
-                child = crossover(parent_a, parent_b, config.budget, rng)
+                child = crossover(
+                    parent_a,
+                    parent_b,
+                    config.budget,
+                    rng,
+                    candidate_pool.edges,
+                    path_edge_indices,
+                    relation_counts,
+                )
             else:
                 parent = random.choice(elites)
                 if rng.random() < config.mutation_rate:
                     mutation_roll = rng.random()
                     total_rate = config.add_rate + config.swap_rate + config.type_rate
                     if total_rate <= 0:
-                        child = add_frontier(parent, candidate_indices, config.budget, rng)
+                        child = add_frontier(parent, candidate_pool.edges, candidate_indices, config.budget, rng)
                     else:
                         threshold_add = config.add_rate / total_rate
                         threshold_swap = (config.add_rate + config.swap_rate) / total_rate
                         if mutation_roll < threshold_add:
-                            child = add_frontier(parent, candidate_indices, config.budget, rng)
+                            child = add_frontier(parent, candidate_pool.edges, candidate_indices, config.budget, rng)
                         elif mutation_roll < threshold_swap:
-                            child = swap_edges(parent, candidate_indices, rng, config.budget)
+                            child = swap_edges(parent, candidate_pool.edges, candidate_indices, rng, config.budget)
                         else:
                             anchor_nodes: set[int] = set()
                             for edge_idx in parent.edge_idx_set:
@@ -162,17 +293,26 @@ def evolve_query(
                                 for idx, (src, _, dst) in enumerate(candidate_pool.edges)
                                 if idx not in parent.edge_idx_set and (src in anchor_nodes or dst in anchor_nodes)
                             }
-                            child = type_aware_add(parent, candidate_indices, rng, preferred, config.budget)
+                            child = type_aware_add(
+                                parent,
+                                candidate_pool.edges,
+                                candidate_indices,
+                                rng,
+                                preferred,
+                                config.budget,
+                            )
                 else:
-                    child = delete_edge(parent, rng)
+                    child = delete_edge(parent, candidate_pool.edges, rng)
             if len(child.edge_idx_set) < config.budget and random.random() < config.immigrant_rate:
                 child = random_individual(candidate_pool, config.budget, rng)
             new_population.append(child)
         population = new_population
     final_scores = evaluate_population(population, drug, disease, candidate_pool, split, classifier, config)
     query_id = f"{drug}__{disease}"
-    persist_topk(split, query_id, candidate_pool, final_scores, config)
-    persist_stats(split, query_id, stats)
+    if persist_topk_file:
+        persist_topk(split, query_id, candidate_pool, final_scores, config)
+    if persist_stats_file:
+        persist_stats(split, query_id, stats)
     return [indiv for _, indiv in final_scores[: config.topk]]
 
 

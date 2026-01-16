@@ -5,12 +5,12 @@
 #SBATCH --job-name=evo-poc
 #SBATCH --partition=volta-gpu
 #SBATCH --qos=gpu_access
-#SBATCH --time=24:00:00
+#SBATCH --time=36:00:00
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
-#SBATCH --output=logs/%x_%jquick.out
-#SBATCH --error=logs/%x_%jquick.err
+#SBATCH --output=logs/random/%x_%j.out
+#SBATCH --error=logs/random/%x_%j.err
 
 set -euo pipefail
 
@@ -61,25 +61,33 @@ GPU_MONITOR_PID=$!
 
 # ---- Run experiments ----
 
-python -m scripts.run_experiments \
-  --split random \
-  --method all \
-  --model rotate \
-  --device cuda \
-  --budget 25 \
-  --pop_size 10 \
-  --generations 5 \
-  --topk 3 \
-  --seeds 1 \
-  --max-cases 5 \
-  --cotrain_rounds 1 \
-  --train_subgraph_method khop \
-  --evo_train_topk 1 \
-  --evo_negatives khop \
-  --mix_khop_frac 0.5 \
-  --evo_train_max_cases 100 \
-  --skip-size-tradeoff
+SPLIT="${SPLIT:-random}"
+SEEDS="${SEEDS:-2}"
+PYKEEN_SEED="${PYKEEN_SEED:-4000}"
+RESULTS_DIR="${RESULTS_DIR:-results/random_seed0}"
+SPLIT_TAG="${SPLIT}_seed${SEEDS}"
 
+echo "Using split tag: ${SPLIT_TAG} (split=${SPLIT}, seeds=${SEEDS})"
+echo "Results directory: ${RESULTS_DIR}"
+echo "PyKEEN random seed: ${PYKEEN_SEED}"
+
+python -m scripts.run_experiments \
+      --split "$SPLIT" \
+      --method all \
+      --model rotate \
+      --device "$DEVICE" \
+      --budget 100 \
+      --pop_size 80 \
+      --topk 5 \
+      --seeds "$SEEDS" \
+      --random-seed "$PYKEEN_SEED" \
+      --results-dir "$RESULTS_DIR" \
+      --classifier logistic \
+      --baseline-method khop \
+      --epochs 50 \
+      --batch_size 1024 \
+      --max-rows 1000 \
+      --max-cases 300
 
 # ---- Stop GPU monitor ----
 kill $GPU_MONITOR_PID || true
