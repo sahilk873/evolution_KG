@@ -47,8 +47,16 @@ Adjust behavior with the `scripts/run_experiments.py` flags:
 - `--device cuda|cpu`
 - `--budget` (edge budget for subgraphs)
 - `--pop_size`, `--generations`, `--topk`, `--seeds`
+- `--no-feature-cache`, `--no-candidate-cache`, `--no-evo-artifacts` to reduce disk usage
 
 Each flag is passed downstream to the matching scripts so you can rerun single components by reusing helper functions.
+
+## Reducing artifact size
+If artifacts are exhausting disk space or memory, you can:
+- Lower `--seeds`, `--max_rows`, and `--max_cases` to reduce the number of cached queries.
+- Use smaller `--budget`, `--topk`, `--pop_size`, and `--generations` to shrink candidate pools and explanations.
+- Skip budget sweeps with `--skip-size-tradeoff`.
+- Disable caches and evolution outputs with `--no-feature-cache`, `--no-candidate-cache`, and `--no-evo-artifacts` to avoid writing large `.npy/.npz` and top-k files.
 
 ## Co-training mode (Level 1)
 Level 1 co-training alternates baseline classifier updates with evolutionary subgraph search to better align the fitness model with evolved hypotheses. Enable it with `--cotrain_rounds` and tune how positives and negatives are sourced:
