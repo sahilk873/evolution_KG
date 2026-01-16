@@ -20,11 +20,11 @@ from eval.viz import plot_diversity_boxplot, plot_robustness_curve, plot_size_tr
 from evolution.evolve import EvolutionConfig, evolve_query
 from embeddings.export_embeddings import export_report
 from embeddings.train_pykeen import train_pykeen
-from features.featurize import build_feature_vector
+from features.featurize import build_feature_vector, set_feature_cache_persistence
 from kg.graph import TypedGraph
 from models.classifier import Classifier
 from models.train import BASELINE_REGISTRY, load_jsonl, train_classifier
-from retrieval.candidate_pool import CandidatePool, build_candidate_pool
+from retrieval.candidate_pool import CandidatePool, build_candidate_pool, set_candidate_cache_persistence
 from retrieval.constraints import CandidateBudget
 from scripts.build_triples import build_triples
 from scripts.download_hetionet import download_hetionet
@@ -108,6 +108,21 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=None,
         help="Seed passed to PyKEEN training for repeatability",
+    )
+    parser.add_argument(
+        "--no-feature-cache",
+        action="store_true",
+        help="Disable on-disk caching of per-subgraph feature vectors.",
+    )
+    parser.add_argument(
+        "--no-candidate-cache",
+        action="store_true",
+        help="Disable on-disk caching of candidate pools.",
+    )
+    parser.add_argument(
+        "--no-evo-artifacts",
+        action="store_true",
+        help="Skip writing evolution top-k/stats artifacts (evo/evo_train).",
     )
     parser.add_argument(
         "--results-dir",
@@ -252,7 +267,8 @@ def _gather_evolved_examples(
         if not subgraphs:
             continue
         query_id = f"{row['drug_id']}__{row['disease_id']}"
-        _persist_training_topk(split_tag, seed, round_idx, query_id, cp, subgraphs)
+        if not args.no_evo_artifacts:
+            _persist_training_topk(split_tag, seed, round_idx, query_id, cp, subgraphs)
         for subgraph in subgraphs:
             evolved.append(
                 build_feature_vector(split_tag, query_id, row["drug_id"], row["disease_id"], cp, subgraph)
@@ -348,6 +364,7 @@ def _evaluate_round(
             seed,
             graph,
             test_rows,
+            persist_artifacts=not args.no_evo_artifacts,
         )
         ran_evolution = bool(evolution_records)
         if ran_evolution:
@@ -404,6 +421,8 @@ def run_evolution_phase(
     seed: int,
     graph: TypedGraph | None = None,
     test_rows: Sequence[Dict[str, Any]] | None = None,
+    *,
+    persist_artifacts: bool = True,
 ) -> tuple[List[float], CandidatePool | None, List[Dict[str, Any]]]:
     graph = graph or load_split_filtered_graph(args.split)
     budgets = CandidateBudget(max_edges_total=args.budget)
@@ -422,7 +441,17 @@ def run_evolution_phase(
         if reference_pool is None:
             reference_pool = cp
         rng = random.Random(hash((row["drug_id"], row["disease_id"], split_tag, seed)))
-        subgraphs = evolve_query(row["drug_id"], row["disease_id"], split_tag, cp, classifier, config, rng)
+        subgraphs = evolve_query(
+            row["drug_id"],
+            row["disease_id"],
+            split_tag,
+            cp,
+            classifier,
+            config,
+            rng,
+            persist_topk_file=persist_artifacts,
+            persist_stats_file=persist_artifacts,
+        )
         diversity_scores.extend(
             jaccard_distance(a.edge_idx_set, b.edge_idx_set)
             for i, a in enumerate(subgraphs)
@@ -771,6 +800,8 @@ def build_size_tradeoff_curves(records: Sequence[Dict[str, Any]]) -> Dict[str, L
 def main() -> None:
     args = parse_args()
     results_root = Path(args.results_dir)
+    set_feature_cache_persistence(not args.no_feature_cache)
+    set_candidate_cache_persistence(not args.no_candidate_cache)
     ensure_directories(results_root)
     mpl_cache_dir = results_root / ".matplotlib_cache"
     mpl_cache_dir.mkdir(parents=True, exist_ok=True)

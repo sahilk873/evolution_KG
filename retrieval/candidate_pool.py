@@ -15,6 +15,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 
 EdgeTuple = Tuple[int, int, int]
 NODE_TYPE_PREFERENCE = {"GENE", "PATHWAY", "ANATOMY"}
+PERSIST_CANDIDATES = True
 
 
 @dataclass
@@ -36,6 +37,11 @@ def cache_path(split: str, query_id: str) -> Path:
     return dest
 
 
+def set_candidate_cache_persistence(persist: bool) -> None:
+    global PERSIST_CANDIDATES
+    PERSIST_CANDIDATES = persist
+
+
 def load_relation_map() -> Dict[str, int]:
     rel_path = Path("data/processed/relation2id.json")
     if not rel_path.exists():
@@ -54,8 +60,8 @@ def build_candidate_pool(
     relation_map: Dict[str, int] | None = None,
 ) -> CandidatePool:
     query_id = f"{drug}__{disease}"
-    cache = cache_path(split, query_id)
-    if cache.exists():
+    cache = cache_path(split, query_id) if PERSIST_CANDIDATES else None
+    if cache is not None and cache.exists():
         arr = np.load(cache, allow_pickle=True)
         nodes = list(arr["nodes"].tolist())
         edges = list(zip(arr["src_idx"].tolist(), arr["rel_id"].tolist(), arr["dst_idx"].tolist()))
@@ -101,12 +107,14 @@ def build_candidate_pool(
         rel_id = relation_map.get(rel, abs(hash(rel)) % 10_000)
         trimmed_edges.append((node_index[src], rel_id, node_index[dst]))
     pool = CandidatePool(nodes=nodes, edges=trimmed_edges)
-    np.savez_compressed(
-        cache,
-        nodes=np.array(nodes, dtype=object),
-        src_idx=np.array([src for src, *_ in trimmed_edges], dtype=np.int32),
-        rel_id=np.array([rel for _, rel, _ in trimmed_edges], dtype=np.int32),
-        dst_idx=np.array([dst for *_, dst in trimmed_edges], dtype=np.int32),
-    )
-    logging.info("Cached candidate pool for %s", query_id)
+    if PERSIST_CANDIDATES:
+        cache = cache or cache_path(split, query_id)
+        np.savez_compressed(
+            cache,
+            nodes=np.array(nodes, dtype=object),
+            src_idx=np.array([src for src, *_ in trimmed_edges], dtype=np.int32),
+            rel_id=np.array([rel for _, rel, _ in trimmed_edges], dtype=np.int32),
+            dst_idx=np.array([dst for *_, dst in trimmed_edges], dtype=np.int32),
+        )
+        logging.info("Cached candidate pool for %s", query_id)
     return pool

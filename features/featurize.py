@@ -15,6 +15,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 NODE_TYPES = ["COMPOUND", "DISEASE", "GENE", "PATHWAY", "ANATOMY", "UNKNOWN"]
 
 FEATURE_CACHE: Dict[Tuple[str, str], Dict[str, np.ndarray]] = {}
+PERSIST_FEATURES = True
 
 def get_query_cache(split: str, query_id: str) -> Dict[str, np.ndarray]:
     key = (split, query_id)
@@ -31,6 +32,11 @@ def clear_feature_cache(split: str | None = None, query_id: str | None = None) -
             FEATURE_CACHE.pop(key, None)
         return
     FEATURE_CACHE.clear()
+
+
+def set_feature_cache_persistence(persist: bool) -> None:
+    global PERSIST_FEATURES
+    PERSIST_FEATURES = persist
 
 
 def load_json(path: Path) -> dict:
@@ -94,12 +100,13 @@ def build_feature_vector(
     query_cache = get_query_cache(split, query_id)
     if subgraph_hash in query_cache:
         return query_cache[subgraph_hash]
-    dest = cache_path(split, query_id, subgraph_hash)
-    cached = load_cached_features(dest)
-    if cached is not None:
-        logging.debug("Loaded cached features from %s", dest)
-        query_cache[subgraph_hash] = cached
-        return cached
+    if PERSIST_FEATURES:
+        dest = cache_path(split, query_id, subgraph_hash)
+        cached = load_cached_features(dest)
+        if cached is not None:
+            logging.debug("Loaded cached features from %s", dest)
+            query_cache[subgraph_hash] = cached
+            return cached
 
     entity_embeddings = load_entity_embeddings(split)
     node_types = load_json(Path("data/processed/node_types.json"))
@@ -122,9 +129,11 @@ def build_feature_vector(
         if typ in NODE_TYPES:
             type_hist[NODE_TYPES.index(typ)] += 1
     feature_vector = np.concatenate([drug_vec, disease_vec, prod_vec, diff_vec, pooled_vec, rel_hist, type_hist])
-    np.save(dest, feature_vector)
+    if PERSIST_FEATURES:
+        np.save(dest, feature_vector)
     query_cache[subgraph_hash] = feature_vector
-    logging.debug("Cached features to %s", dest)
+    if PERSIST_FEATURES:
+        logging.debug("Cached features to %s", dest)
     return feature_vector
 
 
